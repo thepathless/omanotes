@@ -6,6 +6,8 @@ import QtQuick 6.11
 import QtQuick.Controls
 import qs.Commons
 import qs.Ui
+import "NoteGeometry.js" as Geo
+import "components" as NoteUi
 
 Item {
   id: root
@@ -13,6 +15,8 @@ Item {
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
   property var shell: null
   property var manifest: null
+  property var bar: null
+  property var anchorItem: null
 
   property bool opened: false
   property bool settingsOpen: false
@@ -24,10 +28,19 @@ Item {
   readonly property string settingsPath: stateDir + "/settings.json"
 
   property int fontSize: 14
-  property string position: "top-left"
   property string keybind: "SUPER + R"
   property bool stayOnTop: false
   property bool settingsLoaded: false
+
+  readonly property int defaultCardWidth: Style.space(340)
+  readonly property int defaultCardHeight: Style.space(420)
+  readonly property int minCardWidth: Style.space(240)
+  readonly property int minCardHeight: Style.space(220)
+  property int cardWidth: defaultCardWidth
+  property int cardHeight: defaultCardHeight
+  property real freeX: 0
+  property real freeY: 0
+  property bool docked: true
 
   property string barPosition: "top"
 
@@ -38,33 +51,99 @@ Item {
   property string applyError: ""
 
   property color noteBackground: Color.menu.background
-  property int _startWidth: 0
-  property int _startHeight: 0
-  property color foreground: Color.menu.text
-  property color border: Color.menu.border
-  property var borderSpec: Border.surfaceSpec("menu", "border", border, Math.max(1, Style.space(2)))
+  readonly property bool lightBackground: Geo.isLightColor(root.noteBackground)
+  readonly property color foreground: root.lightBackground ? "#20242c" : Color.menu.text
+  readonly property color border: root.lightBackground ? Qt.rgba(0, 0, 0, 0.22) : Color.menu.border
+  readonly property var borderSpec: Border.surfaceSpec("menu", "border", root.border, Math.max(1, Style.space(2)))
   readonly property int cornerRadius: Style.cornerRadius
-  property string fontFamily: Style.font.menuFamily
-  property int contentMargin: Style.spacing.panelPadding
-  property int cardWidth: Style.space(340)
-  property int cardHeight: Style.space(420)
+  readonly property string fontFamily: Style.font.menuFamily
+  readonly property int contentMargin: Style.spacing.panelPadding
   readonly property int gap: Style.gapsOut
+
+  // Selection formatting state, mirrored from the TextArea so the toolbar
+  // can show the same kind of active indicator as the Pin button.
+  property bool selBold: false
+  property bool selItalic: false
+  property bool selUnderline: false
+
+  property real _dragStartX: 0
+  property real _dragStartY: 0
+  property real _resizeStartX: 0
+  property real _resizeStartY: 0
+  property real _resizeStartW: 0
+  property real _resizeStartH: 0
+  property real _resizePressX: 0
+  property real _resizePressY: 0
+  property int _resizeEdgeX: 0
+  property int _resizeEdgeY: 0
+
+  readonly property var anchorWindow: (root.anchorItem && root.anchorItem.QsWindow) ? root.anchorItem.QsWindow.window : null
+  readonly property var panelScreen: root.anchorWindow ? root.anchorWindow.screen : null
+  readonly property real screenW: root.panelScreen ? root.panelScreen.width : 0
+  readonly property real screenH: root.panelScreen ? root.panelScreen.height : 0
+  readonly property string barPos: (root.bar && root.bar.position) ? root.bar.position : root.barPosition
+  readonly property real barThickness: {
+    if (!root.bar) return Style.bar.sizeHorizontal
+    if (root.panelScreen && typeof root.bar.barSizeFor === "function") {
+      var size = root.bar.barSizeFor(root.panelScreen.name)
+      if (size > 0) return size
+    }
+    return Style.bar.sizeHorizontal
+  }
+
+  TransformWatcher {
+    id: anchorWatcher
+    a: root.anchorWindow ? root.anchorWindow.contentItem : null
+    b: root.anchorItem
+  }
+
+  readonly property point anchorPoint: {
+    anchorWatcher.transform
+    if (!root.anchorItem || !root.anchorWindow) return Qt.point(0, 0)
+    return root.anchorItem.mapToItem(root.anchorWindow.contentItem, 0, 0)
+  }
+
+  readonly property real windowX: root.docked ? root.dockedPos.x : root.freeX
+  readonly property real windowY: root.docked ? root.dockedPos.y : root.freeY
+
+  readonly property point dockedPos: Geo.dockedPosition({
+    barPosition: root.barPos,
+    barThickness: root.barThickness,
+    screenWidth: root.screenW,
+    screenHeight: root.screenH,
+    gap: root.gap,
+    hasAnchor: root.anchorItem !== null && root.anchorItem !== undefined,
+    anchorX: root.anchorPoint.x,
+    anchorY: root.anchorPoint.y,
+    anchorWidth: root.anchorItem ? root.anchorItem.width : 0,
+    anchorHeight: root.anchorItem ? root.anchorItem.height : 0,
+    cardWidth: root.cardWidth,
+    cardHeight: root.cardHeight
+  })
 
   function open(payloadJson) {
     root.opened = true
     root.settingsOpen = false
-    root.stayOnTop = false
-    Qt.callLater(function() { textArea.forceActiveFocus() })
+    Qt.callLater(function() {
+      textArea.forceActiveFocus()
+      root.syncSelectionFormat()
+    })
   }
 
   function close() {
     root.opened = false
     root.recording = false
+    root.scheduleSettingsSave()
+  }
+
+  function closeForPopoutSwitch() {
+    root.close()
   }
 
   function dismiss() {
     root.opened = false
     root.recording = false
+    root.scheduleSettingsSave()
     if (root.shell && typeof root.shell.hide === "function")
       root.shell.hide((root.manifest && root.manifest.id) || "omanotes")
   }
@@ -135,11 +214,13 @@ Item {
     var parsed = {}
     try { parsed = JSON.parse(json || "{}") } catch (e) { parsed = {} }
     if (typeof parsed.fontSize === "number") root.fontSize = parsed.fontSize
-    if (typeof parsed.position === "string") root.position = parsed.position
     if (typeof parsed.keybind === "string") root.keybind = parsed.keybind
     if (typeof parsed.cardWidth === "number") root.cardWidth = parsed.cardWidth
     if (typeof parsed.cardHeight === "number") root.cardHeight = parsed.cardHeight
     if (typeof parsed.noteBackground === "string") root.noteBackground = parsed.noteBackground
+    if (typeof parsed.docked === "boolean") root.docked = parsed.docked
+    if (typeof parsed.freeX === "number") root.freeX = parsed.freeX
+    if (typeof parsed.freeY === "number") root.freeY = parsed.freeY
     root.settingsLoaded = true
   }
 
@@ -150,20 +231,24 @@ Item {
   function flushSettings() {
     settingsFile.setText(JSON.stringify({
       fontSize: root.fontSize,
-      position: root.position,
       keybind: root.keybind,
       cardWidth: root.cardWidth,
       cardHeight: root.cardHeight,
-      noteBackground: root.noteBackground.toString()
+      noteBackground: root.noteBackground.toString(),
+      docked: root.docked,
+      freeX: Math.round(root.freeX),
+      freeY: Math.round(root.freeY)
     }, null, 2) + "\n")
   }
 
   onFontSizeChanged: scheduleSettingsSave()
-  onPositionChanged: scheduleSettingsSave()
   onKeybindChanged: scheduleSettingsSave()
   onCardWidthChanged: scheduleSettingsSave()
   onCardHeightChanged: scheduleSettingsSave()
   onNoteBackgroundChanged: scheduleSettingsSave()
+  onDockedChanged: scheduleSettingsSave()
+  onFreeXChanged: scheduleSettingsSave()
+  onFreeYChanged: scheduleSettingsSave()
 
   Component.onCompleted: {
     ensureDirsProc.running = true
@@ -175,55 +260,137 @@ Item {
   }
 
   function setCardWidth(width) {
-    root.cardWidth = Math.max(220, Math.min(900, width))
+    root.cardWidth = Math.max(root.minCardWidth, Math.min(root.screenW > 0 ? root.screenW - root.gap * 2 : 900, width))
   }
 
   function setCardHeight(height) {
-    root.cardHeight = Math.max(200, Math.min(900, height))
-  }
-
-  function setPosition(pos) {
-    root.position = pos
+    root.cardHeight = Math.max(root.minCardHeight, Math.min(root.screenH > 0 ? root.screenH - root.gap * 2 : 900, height))
   }
 
   function setNoteBackground(color) {
     root.noteBackground = color
   }
 
+  function restorePosition() {
+    root.docked = true
+    root.cardWidth = root.defaultCardWidth
+    root.cardHeight = root.defaultCardHeight
+    root.freeX = 0
+    root.freeY = 0
+    root.scheduleSettingsSave()
+  }
+
+  function syncSelectionFormat() {
+    if (!textArea || !textArea.cursorSelection) return
+    var f = textArea.cursorSelection.font
+    root.selBold = f.bold === true
+    root.selItalic = f.italic === true
+    root.selUnderline = f.underline === true
+  }
+
   function toggleBold() {
     var f = textArea.cursorSelection.font
-    f.bold = !f.bold
+    f.bold = !root.selBold
     textArea.cursorSelection.font = f
+    root.syncSelectionFormat()
   }
 
   function toggleItalic() {
     var f = textArea.cursorSelection.font
-    f.italic = !f.italic
+    f.italic = !root.selItalic
     textArea.cursorSelection.font = f
+    root.syncSelectionFormat()
   }
 
   function toggleUnderline() {
     var f = textArea.cursorSelection.font
-    f.underline = !f.underline
+    f.underline = !root.selUnderline
     textArea.cursorSelection.font = f
+    root.syncSelectionFormat()
   }
 
   function changeSelectionSize(delta) {
     var f = textArea.cursorSelection.font
-    f.pixelSize = Math.max(8, Math.min(40, f.pixelSize + delta))
+    var current = f.pixelSize > 0 ? f.pixelSize : root.fontSize
+    f.pixelSize = Math.max(8, Math.min(40, current + delta))
     textArea.cursorSelection.font = f
+    root.syncSelectionFormat()
   }
 
   function isNoteBackground(value) {
     var a = root.noteBackground
     var b = (typeof value === "string") ? value : value.toString()
-    // Compare ignoring alpha prefix differences (#aarrggbb vs #rrggbb).
     var sa = a.toString().toLowerCase()
     var sb = b.toLowerCase()
     if (sa === sb) return true
     if (sa.length === 9 && sb.length === 7 && sa.substring(3) === sb.substring(1)) return true
     if (sb.length === 9 && sa.length === 7 && sb.substring(3) === sa.substring(1)) return true
     return false
+  }
+
+  function beginMove(sceneX, sceneY) {
+    root._dragStartX = root.docked ? root.dockedPos.x : root.freeX
+    root._dragStartY = root.docked ? root.dockedPos.y : root.freeY
+    root._resizePressX = sceneX
+    root._resizePressY = sceneY
+  }
+
+  function updateMove(sceneX, sceneY) {
+    root.docked = false
+    root.freeX = Geo.clampX(root._dragStartX + sceneX - root._resizePressX, root.cardWidth, root.screenW, root.gap)
+    root.freeY = Geo.clampY(root._dragStartY + sceneY - root._resizePressY, root.cardHeight, root.screenH, root.gap)
+  }
+
+  function beginResize(edgeX, edgeY, sceneX, sceneY) {
+    root._resizeEdgeX = edgeX
+    root._resizeEdgeY = edgeY
+    root._resizeStartW = root.cardWidth
+    root._resizeStartH = root.cardHeight
+    root._resizeStartX = root.docked ? root.dockedPos.x : root.freeX
+    root._resizeStartY = root.docked ? root.dockedPos.y : root.freeY
+    root._resizePressX = sceneX
+    root._resizePressY = sceneY
+    if (root.docked) {
+      root.freeX = root._resizeStartX
+      root.freeY = root._resizeStartY
+      root.docked = false
+    }
+  }
+
+  function updateResize(sceneX, sceneY) {
+    var dx = sceneX - root._resizePressX
+    var dy = sceneY - root._resizePressY
+    var w = root._resizeStartW
+    var h = root._resizeStartH
+    var x = root._resizeStartX
+    var y = root._resizeStartY
+
+    if (root._resizeEdgeX < 0) {
+      w = root._resizeStartW - dx
+      x = root._resizeStartX + dx
+    } else if (root._resizeEdgeX > 0) {
+      w = root._resizeStartW + dx
+    }
+    if (root._resizeEdgeY < 0) {
+      h = root._resizeStartH - dy
+      y = root._resizeStartY + dy
+    } else if (root._resizeEdgeY > 0) {
+      h = root._resizeStartH + dy
+    }
+
+    w = Math.max(root.minCardWidth, Math.min(root.screenW > 0 ? root.screenW - root.gap * 2 : 900, w))
+    h = Math.max(root.minCardHeight, Math.min(root.screenH > 0 ? root.screenH - root.gap * 2 : 900, h))
+    if (root._resizeEdgeX < 0) x = root._resizeStartX + root._resizeStartW - w
+    if (root._resizeEdgeY < 0) y = root._resizeStartY + root._resizeStartH - h
+
+    root.cardWidth = Math.round(w)
+    root.cardHeight = Math.round(h)
+    root.freeX = Geo.clampX(x, root.cardWidth, root.screenW, root.gap)
+    root.freeY = Geo.clampY(y, root.cardHeight, root.screenH, root.gap)
+  }
+
+  function endResize() {
+    root.scheduleSettingsSave()
   }
 
   function beginRecording() {
@@ -346,20 +513,11 @@ Item {
   PanelWindow {
     id: panel
     visible: root.opened
-    anchors {
-      top: root.position === "top-left" || root.position === "top-right"
-      bottom: root.position === "bottom-left" || root.position === "bottom-right"
-      left: root.position === "top-left" || root.position === "bottom-left"
-      right: root.position === "top-right" || root.position === "bottom-right"
-    }
-    readonly property bool dockedTop: root.position === "top-left" || root.position === "top-right"
-    readonly property bool dockedBottom: root.position === "bottom-left" || root.position === "bottom-right"
-    readonly property bool dockedLeft: root.position === "top-left" || root.position === "bottom-left"
-    readonly property bool dockedRight: root.position === "top-right" || root.position === "bottom-right"
-    margins.top: (dockedTop && root.barPosition === "top") ? Style.bar.sizeHorizontal + root.gap : root.gap
-    margins.bottom: (dockedBottom && root.barPosition === "bottom") ? Style.bar.sizeHorizontal + root.gap : root.gap
-    margins.left: (dockedLeft && root.barPosition === "left") ? Style.bar.sizeVertical + root.gap : root.gap
-    margins.right: (dockedRight && root.barPosition === "right") ? Style.bar.sizeVertical + root.gap : root.gap
+    screen: root.panelScreen
+    anchors.top: true
+    anchors.left: true
+    margins.left: Math.round(root.docked ? root.dockedPos.x : root.freeX)
+    margins.top: Math.round(root.docked ? root.dockedPos.y : root.freeY)
     implicitWidth: root.cardWidth
     implicitHeight: root.cardHeight
     color: "transparent"
@@ -382,6 +540,39 @@ Item {
       borderSpec: root.borderSpec
       padding: root.contentMargin
 
+      // Middle-drag on the note body moves the window. Middle only, so left
+      // clicks, selection, and every control keep their normal behavior.
+      MouseArea {
+        id: moveArea
+        anchors.fill: parent
+        z: 40
+        acceptedButtons: Qt.MiddleButton
+        property bool dragging: false
+        onPressed: function(mouse) {
+          if (mouse.button !== Qt.MiddleButton) return
+          dragging = true
+          var p = moveArea.mapToItem(null, mouse.x, mouse.y)
+          root.beginMove(root.windowX + p.x, root.windowY + p.y)
+          mouse.accepted = true
+        }
+        onPositionChanged: function(mouse) {
+          if (!dragging) return
+          var p = moveArea.mapToItem(null, mouse.x, mouse.y)
+          root.updateMove(root.windowX + p.x, root.windowY + p.y)
+        }
+        onReleased: dragging = false
+        onCanceled: dragging = false
+      }
+
+      NoteUi.ResizeHandles {
+        anchors.fill: parent
+        z: 50
+        handlesEnabled: root.opened
+        onResizeBegan: function(edgeX, edgeY, sceneX, sceneY) { root.beginResize(edgeX, edgeY, sceneX, sceneY) }
+        onResizeMoved: function(sceneX, sceneY) { root.updateResize(sceneX, sceneY) }
+        onResizeEnded: root.endResize()
+      }
+
       Item {
         id: content
         anchors.fill: parent
@@ -390,52 +581,96 @@ Item {
         anchors.bottomMargin: card.contentBottomInset
         anchors.leftMargin: card.contentLeftInset
 
-        Row {
-          id: toolbarRow
+        Item {
+          id: topBar
           anchors.top: parent.top
           anchors.left: parent.left
-          anchors.right: headerRow.left
-          anchors.rightMargin: Style.spacing.sm
-          spacing: Style.spacing.xs
-          z: 2
+          anchors.right: parent.right
+          height: Math.max(toolbarRow.height, headerRow.height)
 
-          PanelActionButton {
-            iconText: "B"
-            foreground: root.foreground
-            tooltipText: "Bold"
-            onClicked: root.toggleBold()
+          Row {
+            id: toolbarRow
+            visible: !root.settingsOpen
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: headerRow.left
+            anchors.rightMargin: Style.spacing.sm
+            spacing: Style.spacing.xs
+            z: 2
+
+            PanelActionButton {
+              iconText: "B"
+              foreground: root.selBold ? Color.accent : root.foreground
+              bordered: root.selBold
+              tooltipText: "Bold"
+              onClicked: root.toggleBold()
+            }
+            PanelActionButton {
+              iconText: "I"
+              foreground: root.selItalic ? Color.accent : root.foreground
+              bordered: root.selItalic
+              tooltipText: "Italic"
+              onClicked: root.toggleItalic()
+            }
+            PanelActionButton {
+              iconText: "U"
+              foreground: root.selUnderline ? Color.accent : root.foreground
+              bordered: root.selUnderline
+              tooltipText: "Underline"
+              onClicked: root.toggleUnderline()
+            }
+            PanelActionButton {
+              iconText: "A-"
+              foreground: root.foreground
+              tooltipText: "Decrease selection font size"
+              onClicked: root.changeSelectionSize(-1)
+            }
+            PanelActionButton {
+              iconText: "A+"
+              foreground: root.foreground
+              tooltipText: "Increase selection font size"
+              onClicked: root.changeSelectionSize(1)
+            }
           }
-          PanelActionButton {
-            iconText: "I"
-            foreground: root.foreground
-            tooltipText: "Italic"
-            onClicked: root.toggleItalic()
-          }
-          PanelActionButton {
-            iconText: "U"
-            foreground: root.foreground
-            tooltipText: "Underline"
-            onClicked: root.toggleUnderline()
-          }
-          PanelActionButton {
-            iconText: "A-"
-            foreground: root.foreground
-            tooltipText: "Decrease selection font size"
-            onClicked: root.changeSelectionSize(-1)
-          }
-          PanelActionButton {
-            iconText: "A+"
-            foreground: root.foreground
-            tooltipText: "Increase selection font size"
-            onClicked: root.changeSelectionSize(1)
+
+          Row {
+            id: headerRow
+            anchors.top: parent.top
+            anchors.right: parent.right
+            spacing: Style.spacing.xs
+
+            Button {
+              id: pinButton
+              text: root.stayOnTop ? "Pinned" : "Pin"
+              bordered: true
+              selected: root.stayOnTop
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              verticalPadding: Style.spacing.xs
+              tooltipText: root.stayOnTop
+                ? "Pinned — clicking elsewhere won't close it"
+                : "Pin to stay open while using other windows"
+              onClicked: root.stayOnTop = !root.stayOnTop
+            }
+
+            PanelActionButton {
+              id: gearButton
+              iconText: root.settingsOpen ? "✕" : "󰒓"
+              tooltipText: root.settingsOpen ? "Back to notes" : "Settings"
+              foreground: root.foreground
+              onClicked: {
+                root.settingsOpen = !root.settingsOpen
+                if (!root.settingsOpen) Qt.callLater(function() { textArea.forceActiveFocus() })
+              }
+            }
           }
         }
 
         ScrollView {
           visible: !root.settingsOpen
           anchors.fill: parent
-          anchors.topMargin: toolbarRow.height + Style.spacing.sm
-          anchors.rightMargin: headerRow.width + Style.spacing.sm
+          anchors.topMargin: topBar.height + Style.spacing.sm
           clip: true
 
           TextArea {
@@ -448,7 +683,7 @@ Item {
             selectionColor: Style.selectionFillFor(root.foreground, Color.accent)
             selectedTextColor: root.foreground
             placeholderText: "Scratchpad…"
-            placeholderTextColor: Qt.darker(root.foreground, 1.6)
+            placeholderTextColor: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.45)
             background: Item {}
 
             Keys.onPressed: function(event) {
@@ -458,14 +693,26 @@ Item {
               }
             }
 
-            onTextChanged: saveTimer.restart()
+            onTextChanged: {
+              saveTimer.restart()
+              root.syncSelectionFormat()
+            }
+            onCursorPositionChanged: root.syncSelectionFormat()
+            onSelectionStartChanged: root.syncSelectionFormat()
+            onSelectionEndChanged: root.syncSelectionFormat()
+            onActiveFocusChanged: if (activeFocus) root.syncSelectionFormat()
+
+            Connections {
+              target: textArea.cursorSelection
+              function onFontChanged() { root.syncSelectionFormat() }
+            }
           }
         }
 
         Flickable {
           visible: root.settingsOpen
           anchors.fill: parent
-          anchors.rightMargin: headerRow.width + Style.spacing.sm
+          anchors.topMargin: topBar.height + Style.spacing.sm
           contentWidth: width
           contentHeight: settingsColumn.implicitHeight
           clip: true
@@ -574,11 +821,26 @@ Item {
                   onClicked: root.setCardHeight(root.cardHeight + 20)
                 }
               }
-            }
 
-            Column {
-              width: parent.width
-              spacing: Style.spacing.xs
+              Button {
+                text: "Restore position"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.restorePosition()
+              }
+
+              Text {
+                textFormat: Text.PlainText
+                text: "Docks under the bar icon and resets the default size."
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.6)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                wrapMode: Text.Wrap
+                width: parent.width
+              }
+            }
 
             Column {
               width: parent.width
@@ -596,7 +858,7 @@ Item {
                 spacing: Style.spacing.sm
 
                 Repeater {
-                  model: [Color.menu.background, "#fff7d6", "#ffe4e6", "#dbeafe", "#dcfce7", "#1f2937"]
+                  model: [Color.menu.background, "#f2e8d5", "#f0dada", "#dbe7f3", "#dcebdc", "#232833"]
                   delegate: Rectangle {
                     width: Style.space(22)
                     height: Style.space(22)
@@ -609,53 +871,6 @@ Item {
                       onClicked: root.setNoteBackground(modelData)
                     }
                   }
-                }
-              }
-            }
-
-              Text {
-                textFormat: Text.PlainText
-                text: "Position"
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-              }
-
-              Grid {
-                columns: 2
-                spacing: Style.spacing.sm
-
-                Button {
-                  text: "Top-left"
-                  bordered: true
-                  selected: root.position === "top-left"
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: root.setPosition("top-left")
-                }
-                Button {
-                  text: "Top-right"
-                  bordered: true
-                  selected: root.position === "top-right"
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: root.setPosition("top-right")
-                }
-                Button {
-                  text: "Bottom-left"
-                  bordered: true
-                  selected: root.position === "bottom-left"
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: root.setPosition("bottom-left")
-                }
-                Button {
-                  text: "Bottom-right"
-                  bordered: true
-                  selected: root.position === "bottom-right"
-                  foreground: root.foreground
-                  fontFamily: root.fontFamily
-                  onClicked: root.setPosition("bottom-right")
                 }
               }
             }
@@ -692,7 +907,7 @@ Item {
                 textFormat: Text.PlainText
                 visible: root.recording
                 text: "Press a shortcut with one modifier (e.g. Super+T). Esc to cancel."
-                color: Qt.darker(root.foreground, 1.4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.6)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
                 wrapMode: Text.Wrap
@@ -734,7 +949,7 @@ Item {
                 textFormat: Text.PlainText
                 visible: root.applyStatus === "applying"
                 text: "Applying…"
-                color: Qt.darker(root.foreground, 1.4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.6)
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.bodySmall
               }
@@ -749,76 +964,6 @@ Item {
                 width: parent.width
               }
             }
-          }
-        }
-
-        Row {
-          id: headerRow
-          anchors.top: parent.top
-          anchors.right: parent.right
-          spacing: Style.spacing.xs
-
-          Button {
-            id: pinButton
-            text: "Pin"
-            bordered: true
-            selected: root.stayOnTop
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
-            verticalPadding: Style.spacing.xs
-            tooltipText: root.stayOnTop
-              ? "Pinned — clicking elsewhere won't close it"
-              : "Pin to stay open while using other windows"
-            onClicked: root.stayOnTop = !root.stayOnTop
-          }
-
-          PanelActionButton {
-            id: gearButton
-            iconText: root.settingsOpen ? "✕" : "󰒓"
-            tooltipText: root.settingsOpen ? "Back to notes" : "Settings"
-            foreground: root.foreground
-            onClicked: root.settingsOpen = !root.settingsOpen
-          }
-        }
-      }
-
-      Rectangle {
-        id: resizeHandle
-        width: Style.space(14)
-        height: Style.space(14)
-        z: 5
-        color: "transparent"
-        anchors.right: panel.dockedLeft ? parent.right : undefined
-        anchors.left: panel.dockedRight ? parent.left : undefined
-        anchors.bottom: panel.dockedTop ? parent.bottom : undefined
-        anchors.top: panel.dockedBottom ? parent.top : undefined
-
-        Text {
-          textFormat: Text.PlainText
-          anchors.centerIn: parent
-          text: "◢"
-          color: Qt.darker(root.foreground, 1.6)
-          font.pixelSize: Style.font.bodySmall
-          rotation: (panel.dockedRight ? 180 : 0) + (panel.dockedBottom ? 180 : 0)
-        }
-
-        DragHandler {
-          id: resizeDrag
-          target: null
-          onActiveChanged: {
-            if (active) {
-              root._startWidth = root.cardWidth
-              root._startHeight = root.cardHeight
-            }
-          }
-          onTranslationChanged: {
-            var dx = translation.x
-            var dy = translation.y
-            if (panel.dockedRight) dx = -dx
-            if (panel.dockedBottom) dy = -dy
-            root.setCardWidth(root._startWidth + dx)
-            root.setCardHeight(root._startHeight + dy)
           }
         }
       }

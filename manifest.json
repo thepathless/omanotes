@@ -2,17 +2,15 @@
   "schemaVersion": 1,
   "id": "omanotes",
   "name": "OmaNotes",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "Suva",
   "license": "MIT",
-  "description": "A quick-note scratchpad that docks to a screen corner. Toggle with a keybind or the bar icon; font size, note background color, corner, and the keybind itself are all configurable from an in-panel settings view. Summon with: omarchy-shell shell toggle omanotes",
+  "description": "A quick-note scratchpad that opens under its bar icon. Middle-drag to move, drag any edge to resize; the position, size, and note background are remembered. Toggle with a keybind or the bar icon.",
   "kinds": [
-    "panel",
     "bar-widget"
   ],
   "keepLoaded": true,
   "entryPoints": {
-    "panel": "Panel.qml",
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
