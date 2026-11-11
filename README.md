@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OmaNotes
 
 A quick-note scratchpad for [Omarchy](https://omarchy.org/) that docks to a
@@ -42,3 +43,7 @@ o.bind("SUPER + R", "Toggle OmaNotes", "omarchy-shell shell toggle omanotes")
 ## License
 
 MIT — see [LICENSE](LICENSE).
+=======
+# omanotes
+OmaNotes — Omarchy scratchpad notes plugin
+>>>>>>> ebf369c (Initial commit)
