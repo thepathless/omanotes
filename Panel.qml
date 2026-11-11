@@ -190,16 +190,40 @@ Item {
     root.noteBackground = color
   }
 
-  function wrapSelection(openTag, closeTag) {
-    var start = textArea.selectionStart
-    var end = textArea.selectionEnd
-    if (start === end) return
-    var before = textArea.text.substring(0, start)
-    var sel = textArea.text.substring(start, end)
-    var after = textArea.text.substring(end)
-    textArea.text = before + openTag + sel + closeTag + after
-    textArea.selectionStart = start + openTag.length
-    textArea.selectionEnd = start + openTag.length + sel.length
+  function toggleBold() {
+    var f = textArea.cursorSelection.font
+    f.bold = !f.bold
+    textArea.cursorSelection.font = f
+  }
+
+  function toggleItalic() {
+    var f = textArea.cursorSelection.font
+    f.italic = !f.italic
+    textArea.cursorSelection.font = f
+  }
+
+  function toggleUnderline() {
+    var f = textArea.cursorSelection.font
+    f.underline = !f.underline
+    textArea.cursorSelection.font = f
+  }
+
+  function changeSelectionSize(delta) {
+    var f = textArea.cursorSelection.font
+    f.pixelSize = Math.max(8, Math.min(40, f.pixelSize + delta))
+    textArea.cursorSelection.font = f
+  }
+
+  function isNoteBackground(value) {
+    var a = root.noteBackground
+    var b = (typeof value === "string") ? value : value.toString()
+    // Compare ignoring alpha prefix differences (#aarrggbb vs #rrggbb).
+    var sa = a.toString().toLowerCase()
+    var sb = b.toLowerCase()
+    if (sa === sb) return true
+    if (sa.length === 9 && sb.length === 7 && sa.substring(3) === sb.substring(1)) return true
+    if (sb.length === 9 && sa.length === 7 && sb.substring(3) === sa.substring(1)) return true
+    return false
   }
 
   function beginRecording() {
@@ -379,31 +403,31 @@ Item {
             iconText: "B"
             foreground: root.foreground
             tooltipText: "Bold"
-            onClicked: root.wrapSelection("<b>", "</b>")
+            onClicked: root.toggleBold()
           }
           PanelActionButton {
             iconText: "I"
             foreground: root.foreground
             tooltipText: "Italic"
-            onClicked: root.wrapSelection("<i>", "</i>")
+            onClicked: root.toggleItalic()
           }
           PanelActionButton {
             iconText: "U"
             foreground: root.foreground
             tooltipText: "Underline"
-            onClicked: root.wrapSelection("<u>", "</u>")
+            onClicked: root.toggleUnderline()
           }
           PanelActionButton {
             iconText: "A-"
             foreground: root.foreground
-            tooltipText: "Decrease font size"
-            onClicked: root.setFontSize(root.fontSize - 1)
+            tooltipText: "Decrease selection font size"
+            onClicked: root.changeSelectionSize(-1)
           }
           PanelActionButton {
             iconText: "A+"
             foreground: root.foreground
-            tooltipText: "Increase font size"
-            onClicked: root.setFontSize(root.fontSize + 1)
+            tooltipText: "Increase selection font size"
+            onClicked: root.changeSelectionSize(1)
           }
         }
 
@@ -579,7 +603,7 @@ Item {
                     radius: Style.cornerRadius
                     color: modelData
                     border.width: 2
-                    border.color: root.noteBackground.toString() === (typeof modelData === "string" ? modelData : modelData.toString()) ? Color.accent : "transparent"
+                    border.color: root.isNoteBackground(modelData) ? Color.accent : "transparent"
                     MouseArea {
                       anchors.fill: parent
                       onClicked: root.setNoteBackground(modelData)
