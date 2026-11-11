@@ -7,6 +7,7 @@ import QtQuick.Controls
 import qs.Commons
 import qs.Ui
 import "NoteGeometry.js" as NoteGeometry
+import "ResizeHandles.qml" as ResizeHandles
 
 Item {
   id: root
@@ -45,7 +46,6 @@ Item {
 
   // ---- Read-only convenience properties -------------------------------
   readonly property string stateFile: stateDir + "/settings.json"
-  readonly property string pluginDir: homeDir + "/.config/omarchy/plugins/omanotes"
 
   property int _startWidth: 0
   property int _startHeight: 0
@@ -361,57 +361,47 @@ Item {
       spacing: Style.space(4)
       visible: root.isNoteView && root.opened
 
-      Component {
-        id: actionBtn
-        PanelActionButton {
-          property color activeColor: root.accent
-          property bool active: false
-          property var activeIcon: null
-          property var inactiveIcon: null
-          text: active ? activeIcon : inactiveIcon
-          foreground: active ? root.accent : undefined
-          bordered: active
-          fill: parent
-          toolTip: (active ? activeLabel : "")
-          onClicked: parent onClicked()
-        }
+      // Bold
+      PanelActionButton {
+        id: boldBtn
+        icon: Icon.Bold
+        active: root.selBold
+        foreground: root.selBold ? Color.accent : undefined
+        bordered: root.selBold
+        fill: parent
+        tooltipText: "Bold (Ctrl+B)"
+        onClicked: textArea.executeCommand("font-weight", root.selBold ? "normal" : "bold")
+        anchors.left: parent.left
+        anchors.leftMargin: Style.space(2)
       }
 
-      // Bold
-      actionBtn.item || (function() {
-        var _b = actionBtn.createObject(toolbarRow)
-        _b.active = root.selBold
-        _b.activeIcon = Icon.Bold
-        _b.inactiveIcon = Icon.Bold
-        _b.activeLabel = "Bold (Ctrl+B)"
-        _b.onClicked = function() { textArea.executeCommand("font-weight", root.selBold ? "normal" : "bold") }
-        _b.anchors.left = parent.left
-        _b.anchors.leftMargin = Style.space(2)
-      })()
-
       // Italic
-      actionBtn.item || (function() {
-        var _i = actionBtn.createObject(toolbarRow)
-        _i.active = root.selItalic
-        _i.activeIcon = Icon.Italic
-        _i.inactiveIcon = Icon.Italic
-        _i.activeLabel = "Italic (Ctrl+I)"
-        _i.onClicked = function() { textArea.executeCommand("font-italic", root.selItalic ? "normal" : "italic") }
-        _i.anchors.left = _b.right
-        _i.anchors.leftMargin = Style.space(2)
-      })()
+      PanelActionButton {
+        id: italicBtn
+        icon: Icon.Italic
+        active: root.selItalic
+        foreground: root.selItalic ? Color.accent : undefined
+        bordered: root.selItalic
+        fill: parent
+        tooltipText: "Italic (Ctrl+I)"
+        onClicked: textArea.executeCommand("font-italic", root.selItalic ? "normal" : "italic")
+        anchors.left: boldBtn.right
+        anchors.leftMargin: Style.space(2)
+      }
 
       // Underline
-      actionBtn.item || (function() {
-        var _u = actionBtn.createObject(toolbarRow)
-        _u.active = root.selUnderline
-        _u.activeIcon = Icon.Underline
-        _u.inactiveIcon = Icon.Underline
-        _u.activeLabel = "Underline (Ctrl+U)"
-        _u.onClicked = function() { textArea.executeCommand("font-underline", root.selUnderline ? "normal" : "underline") }
-        _u.anchors.left = _i.right
-        _u.anchors.leftMargin = Style.space(2)
-      })()
+      PanelActionButton {
+        id: underlineBtn
+        icon: Icon.Underline
+        active: root.selUnderline
+        foreground: root.selUnderline ? Color.accent : undefined
+        bordered: root.selUnderline
+        fill: parent
+        tooltipText: "Underline (Ctrl+U)"
+        onClicked: textArea.executeCommand("font-underline", root.selUnderline ? "normal" : "underline")
+        anchors.left: italicBtn.right
+        anchors.leftMargin: Style.space(2)
+      }
 
       Item { width: Style.space(4) }
 
@@ -420,9 +410,9 @@ Item {
         id: shrinkBtn
         icon: Icon.FontDecrease
         fill: parent
-        toolTip: "Decrease font size (Ctrl+-)"
+        tooltipText: "Decrease font size (Ctrl+-)"
         onClicked: root.adjustFontSize(-1)
-        anchors.left: _u.right
+        anchors.left: underlineBtn.right
         anchors.leftMargin: Style.space(2)
       }
 
@@ -430,7 +420,7 @@ Item {
         id: growBtn
         icon: Icon.FontIncrease
         fill: parent
-        toolTip: "Increase font size (Ctrl+=)"
+        tooltipText: "Increase font size (Ctrl+=)"
         onClicked: root.adjustFontSize(1)
         anchors.left: shrinkBtn.right
         anchors.leftMargin: Style.space(2)
@@ -447,7 +437,7 @@ Item {
       visible: root.opened
 
       // ---- Resize handles (section 3) -----------------------------
-      components.ResizeHandles {
+      ResizeHandles {
         id: handles
         anchors.fill: parent
         handlesEnabled: !root.settingsOpen && root.opened
@@ -536,7 +526,6 @@ Item {
         font.pointSize: root.fontSize
         visible: textArea.text.length === 0 && !textArea.activeFocus
         z: 1
-        level: 0
         readonly property string emptyNoteHint: qsTr("Start typing…")
       }
     }
@@ -552,6 +541,9 @@ Item {
 
   // ---- Pin ---------------------------------------------
   property bool pinned: false
+  property bool recording: false
+  property string pendingCombo: ""
+  property string recordError: ""
   function togglePin() {
     root.pinned = !root.pinned
     if (root.pinned) {
